@@ -25,7 +25,6 @@ Observation Space:
 Action Space:
     - Charge/Discharge battery
     - Load shedding? (später)
-
 '''
 
 import gymnasium as gym
