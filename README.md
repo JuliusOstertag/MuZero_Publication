@@ -3,13 +3,21 @@
 15 min resolution
 
 Observation Space:
+
     - Time and day (ok)
+    
     - Battery state of charge (ok)
+    
     - Current power consumption (Julius)
+    
     - Consumption forecast (Julius)
+    
     - Grid consumption (ok)
+    
     - Renewable ressources (Patrick)
+    
     - Renewable forecast (24 - 48 hours) 
+    
     - Grid Price forecast
 
 def get_power_consumption(timestamp):
