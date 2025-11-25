@@ -1,6 +1,8 @@
 import tensorflow as tf
 import glob
 import imageio
+import matplotlib
+matplotlib.use('Qt5Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -105,7 +107,26 @@ def main():
 
                 np.savetxt(f'generated_data/{dir_name}/load_series_epoch_{epoch}.csv', values, delimiter=',')
 
-        plot_vector(generated_data, epoch, dir_name)
+        # plot_vector(generated_data, epoch, dir_name)
+
+        
+        # Save the trained generator model
+        model_dir = f'generated_models/{dir_name}'
+        if not os.path.exists(model_dir):
+            os.makedirs(model_dir)
+
+        # Option A: save in native Keras single-file format (.keras) — easy to load with tf.keras.models.load_model
+        keras_path = os.path.join(model_dir, 'generator.keras')
+        generator.save(keras_path, overwrite=True)
+        print(f'Generator saved (Keras) to {keras_path}')
+
+        # Option B: also export TensorFlow SavedModel directory (useful for TF Serving / tflite)
+        try:
+            tf.saved_model.save(generator, os.path.join(model_dir, 'saved_model'))
+            print(f'Generator exported (SavedModel) to {os.path.join(model_dir, "saved_model")}')
+        except Exception:
+            # ignore export errors (optional)
+            pass
 
     train(train_dataset, EPOCHS)
 
@@ -270,8 +291,7 @@ def plot_vector(generated_data, epoch, dir_name):
     plt.legend()
     plt.show()
     plt.savefig(f'generated_plots/{dir_name}/{epoch}.png')
-
-    print('stop')
+    plt.close()
 
 
 if __name__ == '__main__':
