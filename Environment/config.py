@@ -1,7 +1,7 @@
 class Config:
-    def __init__(self):
-        self.episode_length = 672 # steps
+    # def __init__(self):
+    episode_length = 672 # steps
 
-        # Battery data
-        self.battery_capacity = 100 # kWh
-        self.battery_dod = 0.2
+    # Battery data
+    battery_capacity = 100 # kWh
+    battery_dod = 0.2
