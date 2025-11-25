@@ -4,21 +4,23 @@
 
 Observation Space:
 
-    - Time and day (ok)
+    - Time and day (Patrick)
     
-    - Battery state of charge (ok)
+    - Battery state of charge (Patrick)
     
     - Current power consumption (Julius)
     
-    - Consumption forecast (Julius)
+    - Consumption forecast (ok)
     
-    - Grid consumption (ok)
+    - Grid consumption (Patrick)
     
-    - Renewable ressources (Patrick)
+    - Renewable ressources (ok)
     
-    - Renewable forecast (24 - 48 hours) 
+    - Renewable forecast (24 - 48 hours) (ok)
     
-    - Grid Price forecast
+    - Grid Price forecast (Julius)
+
+    - step function (Patrick)
 
 def get_power_consumption(timestamp):
   return pd.Series(24h, 15min res [00:00 --> 23:45)
@@ -32,4 +34,4 @@ def make_forecast(pd.Series):
 
 grid_price_forecast()
   download data 
-  train regressor
+  train regressor --> simple approach just use prices from Fraunhofer
