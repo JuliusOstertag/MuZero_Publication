@@ -48,6 +48,8 @@ class BatteryEnv(gym.Env):
         self.current_step = 0
         self.pv_raw = pd.read_csv("../data/pv.csv")
         self.wind_raw = pd.read_csv("../data/wind.csv")
+        self.grid_price_raw = pd.read_csv("../data/grid_price.csv")
+        self.episode_consumption = None
         # Battery parameters
         self.battery_capacity = Config.battery_capacity
         self.reset()
@@ -55,6 +57,8 @@ class BatteryEnv(gym.Env):
     def reset(self):
         self.current_step = 0
         date = self._get_random_date()
+        self.episode_consumption = self._get_power_consumption(date)
+
         self._build_observation_space(date)
 
     def _get_random_date(self):
@@ -63,8 +67,11 @@ class BatteryEnv(gym.Env):
 
     def _build_observation_space(self, date):
         renewable_resources = self._get_renewable_resources(date)
+        consumption = self.episode_consumption
+        forecast = self._get_forecast(date)
+        grid_price = self._get_grid_price(date)
         self.observation_space = renewable_resources #gym.spaces.Box(low=-1, high=1, shape=(1,))
-
+    
     def _get_renewable_resources(self, date) -> pd.DataFrame:
         pv = self._get_pv(date) * self.pv_scale
         wind = self._get_wind(date) * self.wind_scale
@@ -75,77 +82,48 @@ class BatteryEnv(gym.Env):
 
     def _get_wind(self, date) -> pd.Series:
         return self.wind_raw["WINDOUT"][self.wind_raw["Date"] == date]
+    
+    def _get_grid_price(self, date) -> pd.Series:
+        return self.grid_price_raw["DAYAHEADPRICE"][self.grid_price_raw["Date"] == date]
+    
+    def _get_forecast(self, date) -> pd.DataFrame:
+        pv_forecast = self._simulate_forecast(self._get_pv(date) * self.pv_scale)
+        wind_forecast = self._simulate_forecast(self._get_wind(date) * self.wind_scale) 
+        consumption_forecast = self._simulate_forecast(self.episode_consumption)
+        grid_price_forecast = self._simulate_forecast(self._get_grid_price(date))
+        return pd.DataFrame([pv_forecast, wind_forecast, consumption_forecast, grid_price_forecast]).T
 
-def get_power_consumption(timestamp='2025-01-01'):
-    # Da die GAN Generierung noch keine zuverlässigen Profile erstellt, wird hier eine 
-    # Schleife zur Generierung verwendet, bis die Bedingung erfüllt ist.
-    n = 1
-    while True:
-        # Generiere das Profil mit seed=seed kann ein seed für reproduzierbare Ergebnisse hinzugefügt werden
-        profile = generate_profile_one_day(r'generated_models/V2-1_relu/generator')
+    def _get_power_consumption(self, timestamp='2025-01-01'):
+        while True:
+            profile = generate_profile_one_day(r'generated_models/V2-1_relu/generator') # seed kann festgelegt werden
 
-        # Überprüfe, ob mehr als 20 % der Werte über 0,5 liegen
-        if (profile > 0.5).mean() > 0.20:
-            break  # Bedingung erfüllt, Schleife verlassen
-        n += 1
-    print(f"Profile generated after {n} attempt(s).")
-    # Erstelle einen Datetime-Index für den gegebenen timestamp, von 00:00 bis 23:45 in 15-Minuten-Schritten
-    date = pd.to_datetime(timestamp)
-    time_index = pd.date_range(start=date, periods=96, freq='15min')
+            if (profile > 0.5).mean() > 0.20:
+                break 
 
-    # Erstelle eine Pandas-Series mit dem Datetime-Index
-    power_series = pd.Series(profile.flatten(), index=time_index)
+        date = pd.to_datetime(timestamp)
+        time_index = pd.date_range(start=date, periods=96, freq='15min')
 
-    power_series = adjust_amplitude(power_series)
+        power_series = pd.Series(profile.flatten(), index=time_index)
+        power_series = self._adjust_amplitude(power_series)
 
-    return power_series
+        return power_series
 
+    def _adjust_amplitude(self, power_series, min_peak=5, max_peak=10):
+        current_max = power_series.max()
 
-def adjust_amplitude(power_series, min_peak=5, max_peak=10):
-    """
-    Skaliert die Zeitreihe so, dass die maximale Amplitude auf einen zufälligen Wert zwischen 
-    min_peak und max_peak gesetzt wird.
-    Das Minimum bleibt bei 0, der Rest wird proportional skaliert.
+        new_max = np.random.uniform(min_peak, max_peak)
 
-    Parameter:
-    - power_series: Pandas-Series mit den Lastdaten
-    - min_peak: Minimaler Wert für die maximale Amplitude (Standard: 5)
-    - max_peak: Maximaler Wert für die maximale Amplitude (Standard: 10)
+        scale_factor = new_max / current_max
+        scaled_series = power_series * scale_factor
 
-    Rückgabe:
-    - Skalierte Pandas-Series
-    """
-    current_max = power_series.max()
-    current_min = power_series.min()
+        return scaled_series
 
-    # Zufälliger Wert für die neue maximale Amplitude
-    new_max = np.random.uniform(min_peak, max_peak)
+    def _simulate_forecast(self, power_series, noise_std=0.25):
+        noise = np.random.normal(0, noise_std, size=len(power_series))
+        forecast = power_series + noise
 
-    # Skalierungsfaktor berechnen
-    scale_factor = new_max / current_max
-
-    # Serie skalieren (Minimum bleibt bei 0)
-    scaled_series = power_series * scale_factor
-
-    return scaled_series
-
-
-def simulate_forecast(power_series, noise_std=0.25):
-    """
-    Simuliert eine Vorhersage der Zeitreihe mit gaußschem Rauschen.
-
-    Parameter:
-    - power_series: Pandas-Series mit den Originaldaten
-    - noise_std: Standardabweichung des Rauschens (Standard: 0.1)
-
-    Rückgabe:
-    - Vorhersage als Pandas-Series mit gleichem Index
-    """
-    noise = np.random.normal(0, noise_std, size=len(power_series))
-    forecast = power_series + noise
-    # Negative Werte auf 0 setzen (falls nötig)
-    forecast = forecast.clip(lower=0)
-    return forecast
+        forecast = forecast.clip(lower=0)
+        return forecast
 
 
 def plot_power_consumption(power_series, forecast_series=None, title="Stromverbrauch (15-Minuten-Auflösung)"):
@@ -189,9 +167,7 @@ def plot_power_consumption(power_series, forecast_series=None, title="Stromverbr
 if __name__ == '__main__':
     self = BatteryEnv()
     
-    consumption = get_power_consumption(0)
-    consumption_forecast = simulate_forecast(consumption)
-    plot_power_consumption(consumption, consumption_forecast)
+    print(self.observation_space)
 
 
 
