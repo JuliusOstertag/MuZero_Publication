@@ -4,23 +4,30 @@
 
 Observation Space:
 
-    - Time and day (Patrick)
+    - Time and day (ok)
     
-    - Battery state of charge (Patrick)
+    - Battery state of charge (ok)
     
-    - Current power consumption (Julius)
+    - Current power consumption (ok)
     
     - Consumption forecast (ok)
     
-    - Grid consumption (Patrick)
+    - Grid consumption (ok)
     
     - Renewable ressources (ok)
     
     - Renewable forecast (24 - 48 hours) (ok)
     
-    - Grid Price forecast (Julius)
+    - Grid Price forecast (ok)
 
-    - step function (Patrick)
+    - step function (ok)
+
+## TODO
+- class config as yaml file opener (Patrick)
+- check battery behaviour (both)
+- concept for input data (Julius)
+- plan for paper
+- Journals/Conference? (Patrick)
 
 def get_power_consumption(timestamp):
   return pd.Series(24h, 15min res [00:00 --> 23:45)

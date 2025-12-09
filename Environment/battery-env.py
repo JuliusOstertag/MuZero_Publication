@@ -28,8 +28,6 @@ Action Space:
 '''
 
 import gymnasium as gym
-import numpy as np
-
 from config import Config
 from generate_load_profile import generate_profile_one_day
 import matplotlib.pyplot as plt
@@ -38,67 +36,227 @@ import numpy as np
 
 class BatteryEnv(gym.Env):
 
-    def __init__(self, wind_scale=1, pv_scale=1):
+    metadata = {"render_modes": []}
+
+    def __init__(self, wind_scale=1.0, pv_scale=1.0):
         super(BatteryEnv, self).__init__()
 
         # General simulation parameters
         self.wind_scale = wind_scale
         self.pv_scale = pv_scale
-        self.episode_length = Config.episode_length
+        self.episode_length = Config.episode_length  # should be 96 for 1 day at 15 min
         self.current_step = 0
         self.pv_raw = pd.read_csv("../data/pv.csv")
         self.wind_raw = pd.read_csv("../data/wind.csv")
         self.grid_price_raw = pd.read_csv("../data/grid_price.csv")
         self.episode_consumption = None
-        # Battery parameters
-        self.battery_capacity = Config.battery_capacity
-        self.reset()
 
-    def reset(self):
+        self.capacity = Config.battery_capacity
+        self.dt = 0.25  # 15 minutes in hours
+        self.max_power = self.capacity / self.dt
+
+        self.soc = 0.5  # initial state of charge, relative [0, 1]
+
+        # Action space: 11 discrete values mapping to -100 percent ... 0 ... +100 percent
+        # Convention:
+        #   negative -> charging (battery takes power)
+        #   positive -> discharging (battery delivers power to load)
+        self.action_values = np.linspace(-1.0, 1.0, 11, dtype=np.float32)
+        self.action_space = gym.spaces.Discrete(11)
+
+        self.n_scalar_features = 6  # time_of_day_norm, soc, current load, pv, wind, price (or forecast_t etc.)
+        self.n_forecast_features = 4  # load, pv, wind, price
+        self.forecast_horizon = self.episode_length  # 96
+
+        obs_dim = self.n_scalar_features + self.n_forecast_features * self.forecast_horizon
+
+        # Define bounds (here a simple 0..20 kW for all power-like values, 0..1 for normalized terms)
+        low = np.full(obs_dim, 0.0, dtype=np.float32)
+        high = np.full(obs_dim, 20.0, dtype=np.float32)
+
+        low[0:2] = 0.0
+        high[0:2] = 1.0
+
+        self.observation_space = gym.spaces.Box(low=low, high=high, dtype=np.float32)
+
+        self.date = None
+        self.time_index = None
+        self.time_df = None
+        self.renewable_resources = None
+        self.consumption = None
+        self.consumption_forecast = None
+        self.last_grid_consumption = 0.0
+        self.forecast_horizon = self.episode_length  # 96 for 24h
+        self.forecast_df = None
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
         self.current_step = 0
-        date = self._get_random_date()
-        self.episode_consumption = self._get_power_consumption(date)
+        self.soc = np.random.random()
+        self.last_grid_consumption = 0.0
 
-        self._build_observation_space(date)
+        self.date = self._get_random_date()
+        self._build_time_index(self.date)
+        self.renewable_resources = self._get_renewable_resources(self.date)
+        self.consumption = self._get_power_consumption(timestamp=self.date)
+        self.forecast_df = self._get_forecast(self.date)
+        self.consumption_forecast = self.forecast_df["consumption_forecast"]
+
+        obs = self._get_observation()
+        info = {}
+        return obs, info
+
+    def step(self, action: int):
+        rate = float(self.action_values[action])  # -1 ... 1
+
+        t = self.current_step
+
+        load_t = float(self.consumption.iloc[t])
+        pv_t = float(self.renewable_resources["pv"].iloc[t])
+        wind_t = float(self.renewable_resources["wind"].iloc[t])
+
+        desired_power = rate * self.max_power
+
+        allowed_power = self._limit_battery_power(desired_power)
+
+        energy_change = -allowed_power * self.dt
+        self.soc = np.clip(self.soc + energy_change / self.capacity, 0.0, 1.0)
+
+        grid_consumption = load_t - pv_t - wind_t - allowed_power
+        self.last_grid_consumption = grid_consumption
+
+        grid_import = max(grid_consumption, 0.0)
+        reward = -grid_import
+
+        self.current_step += 1
+        terminated = self.current_step >= self.episode_length
+        truncated = False
+
+        obs = self._get_observation()
+        info = {
+            "grid_consumption": grid_consumption,
+            "battery_power": allowed_power,
+            "soc": self.soc,
+            "load": load_t,
+            "pv": pv_t,
+            "wind": wind_t,
+        }
+
+        return obs, reward, terminated, truncated, info
 
     def _get_random_date(self):
         dates = self.pv_raw["Date"].unique()
         return np.random.choice(dates)
 
-    def _build_observation_space(self, date):
-        renewable_resources = self._get_renewable_resources(date)
-        consumption = self.episode_consumption
-        forecast = self._get_forecast(date)
-        grid_price = self._get_grid_price(date)
-        self.observation_space = renewable_resources #gym.spaces.Box(low=-1, high=1, shape=(1,))
-    
+    def _build_time_index(self, date):
+        start = pd.to_datetime(date)
+        self.time_index = pd.date_range(start=start, periods=self.episode_length, freq="15min")
+        self.time_df = pd.DataFrame({"timestamp": self.time_index})
+
     def _get_renewable_resources(self, date) -> pd.DataFrame:
-        pv = self._get_pv(date) * self.pv_scale
-        wind = self._get_wind(date) * self.wind_scale
-        return pd.DataFrame([pv, wind]).T
+        pv = self._get_pv(date).reset_index(drop=True) * self.pv_scale
+        wind = self._get_wind(date).reset_index(drop=True) * self.wind_scale
+
+        df = pd.DataFrame({
+            "pv": pv.values,
+            "wind": wind.values,
+        })
+        df = df.iloc[: self.episode_length].copy()
+        df.index = self.time_index
+        return df
 
     def _get_pv(self, date) -> pd.Series:
-        return self.pv_raw["PVOUT"][self.pv_raw["Date"] == date]
+        return self.pv_raw.loc[self.pv_raw["Date"] == date, "PVOUT"]
 
     def _get_wind(self, date) -> pd.Series:
-        return self.wind_raw["WINDOUT"][self.wind_raw["Date"] == date]
-    
+        return self.wind_raw.loc[self.wind_raw["Date"] == date, "WINDOUT"]
+
     def _get_grid_price(self, date) -> pd.Series:
-        return self.grid_price_raw["DAYAHEADPRICE"][self.grid_price_raw["Date"] == date]
-    
+        return self.grid_price_raw.loc[self.grid_price_raw["Date"] == date, "DAYAHEADPRICE"]
+
     def _get_forecast(self, date) -> pd.DataFrame:
         pv_forecast = self._simulate_forecast(self._get_pv(date) * self.pv_scale)
-        wind_forecast = self._simulate_forecast(self._get_wind(date) * self.wind_scale) 
-        consumption_forecast = self._simulate_forecast(self.episode_consumption)
+        wind_forecast = self._simulate_forecast(self._get_wind(date) * self.wind_scale)
+
+        # Use the episode consumption as "true" to forecast from
+        consumption_forecast = self._simulate_forecast(self.consumption)
+
         grid_price_forecast = self._simulate_forecast(self._get_grid_price(date))
-        return pd.DataFrame([pv_forecast, wind_forecast, consumption_forecast, grid_price_forecast]).T
+
+        df = pd.DataFrame({
+            "pv_forecast": pv_forecast.values,
+            "wind_forecast": wind_forecast.values,
+            "consumption_forecast": consumption_forecast.values,
+            "grid_price_forecast": grid_price_forecast.values,
+        })
+
+        df = df.iloc[: self.episode_length].copy()
+        df.index = self.time_index
+        return df
+
+    def _get_observation(self) -> np.ndarray:
+        t = min(self.current_step, self.episode_length - 1)
+
+        time_of_day_norm = t / self.episode_length  # 0 .. <1
+        load_t = float(self.consumption.iloc[t])
+        pv_t = float(self.renewable_resources["pv"].iloc[t])
+        wind_t = float(self.renewable_resources["wind"].iloc[t])
+
+        price_series = self._get_grid_price(self.date)
+        price_t = float(price_series.iloc[t])
+
+        scalar_part = np.array([
+            time_of_day_norm,
+            self.soc,
+            load_t,
+            pv_t,
+            wind_t,
+            price_t,
+        ], dtype=np.float32)
+
+        H = self.forecast_horizon  # 96
+        nF = self.n_forecast_features
+        future = np.zeros((H, nF), dtype=np.float32)
+
+        remaining = self.episode_length - t
+        steps_to_fill = min(H, remaining)
+
+        future[:steps_to_fill, 0] = self.forecast_df["consumption_forecast"].iloc[t:t + steps_to_fill].values
+        future[:steps_to_fill, 1] = self.forecast_df["pv_forecast"].iloc[t:t + steps_to_fill].values
+        future[:steps_to_fill, 2] = self.forecast_df["wind_forecast"].iloc[t:t + steps_to_fill].values
+        future[:steps_to_fill, 3] = self.forecast_df["grid_price_forecast"].iloc[t:t + steps_to_fill].values
+        future_flat = future.flatten().astype(np.float32)
+        obs = np.concatenate([scalar_part, future_flat], axis=0)
+
+        return obs
+
+    def _limit_battery_power(self, desired_power: float) -> float:
+        """
+        Enforce state of charge constraints for the given desired power.
+
+        desired_power > 0: discharge (battery supplies power)
+        desired_power < 0: charge (battery absorbs power)
+        """
+        if desired_power > 0:
+            max_discharge_energy = self.soc * self.capacity
+            max_discharge_power = max_discharge_energy / self.dt
+            allowed_power = min(desired_power, max_discharge_power)
+        elif desired_power < 0:
+            remaining_capacity = (1.0 - self.soc) * self.capacity
+            max_charge_power = remaining_capacity / self.dt
+            allowed_power = max(desired_power, -max_charge_power)
+        else:
+            allowed_power = 0.0
+
+        return allowed_power
+
 
     def _get_power_consumption(self, timestamp='2025-01-01'):
         while True:
             profile = generate_profile_one_day(r'generated_models/V2-1_relu/generator') # seed kann festgelegt werden
 
             if (profile > 0.5).mean() > 0.20:
-                break 
+                break
 
         date = pd.to_datetime(timestamp)
         time_index = pd.date_range(start=date, periods=96, freq='15min')
@@ -160,36 +318,7 @@ def plot_power_consumption(power_series, forecast_series=None, title="Stromverbr
     plt.show()
 
 
-
-
-
-
 if __name__ == '__main__':
     self = BatteryEnv()
     
     print(self.observation_space)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
