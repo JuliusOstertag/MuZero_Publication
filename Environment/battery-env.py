@@ -34,6 +34,10 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 
+
+cfg = Config.from_yaml("config/exp1.yaml")
+
+
 class BatteryEnv(gym.Env):
 
     metadata = {"render_modes": []}
@@ -44,14 +48,14 @@ class BatteryEnv(gym.Env):
         # General simulation parameters
         self.wind_scale = wind_scale
         self.pv_scale = pv_scale
-        self.episode_length = Config.episode_length  # should be 96 for 1 day at 15 min
+        self.episode_length = cfg.episode_length  # should be 96 for 1 day at 15 min
         self.current_step = 0
         self.pv_raw = pd.read_csv("../data/pv.csv")
         self.wind_raw = pd.read_csv("../data/wind.csv")
         self.grid_price_raw = pd.read_csv("../data/grid_price.csv")
         self.episode_consumption = None
 
-        self.capacity = Config.battery_capacity
+        self.capacity = cfg.battery_capacity
         self.dt = 0.25  # 15 minutes in hours
         self.max_power = self.capacity / self.dt
 

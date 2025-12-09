@@ -1,0 +1,11 @@
+episode_length: 144      # number of steps
+battery_capacity: 100    # kWh
+
+# Für unterschiedliche Profile o.ä.
+pv_path: "../data/pv.csv"
+wind_path: "../data/wind.csv"
+grid_price_path: "../data/grid_price.csv"
+
+# Nur eine idee, experimente mit Reward Änderungen:
+reward_weight_import: 1.0
+reward_weight_peak: 0.5
